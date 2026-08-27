@@ -110,6 +110,36 @@ function extractInputValue(html, name) {
   return tag.match(/value=["']([^"']*)["']/i)?.[1] ?? null;
 }
 
+// Ekstrak SEMUA <form>...</form> beserta seluruh <input> di dalamnya.
+// Ini menggantikan pendekatan "nebak field" — kita ambil field apa adanya
+// dari HTML asli (termasuk tombol submit "Authorize app" / hidden token lain
+// yang mungkin tidak kita tahu namanya sebelumnya).
+function extractForms(html) {
+  const forms = [];
+  const formRe = /<form\b[^>]*>([\s\S]*?)<\/form>/gi;
+  let m;
+  while ((m = formRe.exec(html))) {
+    const fullTag = m[0];
+    const inner = m[1];
+    const action = fullTag.match(/action=["']([^"']*)["']/i)?.[1] || null;
+    const fields = {};
+    let submit = null; // {name, value} tombol submit, kalau ada
+    const inputRe = /<input\b([^>]*)>/gi;
+    let im;
+    while ((im = inputRe.exec(inner))) {
+      const attrs = im[1];
+      const name = attrs.match(/name=["']([^"']*)["']/i)?.[1];
+      if (!name) continue;
+      const value = attrs.match(/value=["']([^"']*)["']/i)?.[1] ?? "";
+      const type = (attrs.match(/type=["']([^"']*)["']/i)?.[1] || "text").toLowerCase();
+      fields[name] = value;
+      if (type === "submit") submit = { name, value };
+    }
+    forms.push({ action, fields, submit });
+  }
+  return forms;
+}
+
 // ─── Akun ─────────────────────────────────────────────────────
 function loadAccounts(filepath) {
   const content = fs.readFileSync(filepath, "utf-8");
@@ -170,25 +200,42 @@ async function connectAccount(account) {
     return finishCallback(jar, r2.finalUrl, label);
   }
 
-  // Step 3
+  // Step 3 — ambil SEMUA field form apa adanya, bukan nebak nama field
   console.log(`[${label}] Step 3: Parse form authorize...`);
-  const authenticity_token = extractInputValue(r2.body, "authenticity_token");
-  if (!authenticity_token) {
-    if (r2.finalUrl.includes("login") || r2.finalUrl.includes("x.com"))
-      return { label, status: "GAGAL", error: "Cookie expired / tidak valid" };
-    return { label, status: "GAGAL", error: `Tidak bisa parse form. URL: ${r2.finalUrl}` };
+  if (r2.finalUrl.includes("login") || r2.finalUrl.includes("x.com")) {
+    return { label, status: "GAGAL", error: "Cookie expired / tidak valid" };
   }
-  console.log(`[${label}]   Got authenticity_token ✓`);
 
-  // Step 4
+  const forms = extractForms(r2.body);
+  // Form yang benar: punya authenticity_token, dan kalau ada >1 form
+  // (biasanya form Authorize + form Cancel terpisah), pilih yang tombolnya
+  // BUKAN "cancel" / "deny".
+  const candidates = forms.filter(f => f.fields.authenticity_token);
+  const authorizeForm =
+    candidates.find(f => f.submit && !/cancel|deny|batal/i.test(f.submit.value + f.submit.name)) ||
+    candidates[0];
+
+  if (!authorizeForm) {
+    // Simpan HTML mentah supaya bisa diperiksa manual tanpa perlu buka browser lagi
+    const dumpPath = `debug_step2_${label}.html`;
+    fs.writeFileSync(dumpPath, r2.body);
+    return { label, status: "GAGAL", error: `Tidak ada form authorize ditemukan. HTML disimpan ke ${dumpPath}` };
+  }
+  console.log(`[${label}]   Form ditemukan, fields: ${Object.keys(authorizeForm.fields).join(", ")}`);
+  if (authorizeForm.submit) console.log(`[${label}]   Submit button: ${authorizeForm.submit.name}=${authorizeForm.submit.value}`);
+
+  // Step 4 — kirim field APA ADANYA dari form (bukan set manual 3 field),
+  // lalu timpa oauth_token supaya konsisten dengan token yang kita pegang.
   console.log(`[${label}] Step 4: Submit authorize...`);
-  const body = new URLSearchParams({
-    authenticity_token,
-    oauth_token,
-    redirect_after_login: `https://api.twitter.com/oauth/authenticate?oauth_token=${oauth_token}`,
-  }).toString();
+  const fieldsToSend = { ...authorizeForm.fields, oauth_token };
+  if (authorizeForm.submit) fieldsToSend[authorizeForm.submit.name] = authorizeForm.submit.value;
+  const body = new URLSearchParams(fieldsToSend).toString();
 
-  const r4 = await request(jar, "https://api.twitter.com/oauth/authorize", {
+  const postAction = authorizeForm.action
+    ? new URL(authorizeForm.action, "https://api.twitter.com/oauth/authorize").href
+    : "https://api.twitter.com/oauth/authorize";
+
+  const r4 = await request(jar, postAction, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
@@ -202,7 +249,11 @@ async function connectAccount(account) {
 
   if (r4.finalUrl.includes("gotchafi.com")) return finishCallback(jar, r4.finalUrl, label);
 
-  return { label, status: "GAGAL", error: `Unexpected URL: ${r4.finalUrl}` };
+  // Gagal lagi? simpan body-nya biar bisa dibaca tanpa buka browser
+  const failDumpPath = `debug_step4_${label}.html`;
+  fs.writeFileSync(failDumpPath, r4.body);
+  console.log(`[${label}]   Body disimpan ke ${failDumpPath} (${r4.body.length} chars)`);
+  return { label, status: "GAGAL", error: `Unexpected URL: ${r4.finalUrl}. Lihat ${failDumpPath}` };
 }
 
 // ─── Menu ─────────────────────────────────────────────────────
@@ -223,8 +274,7 @@ async function main() {
 
   let targets = [];
   if (mode === "1") {
-    accounts.forEach((a, i) => console.log(`  ${i + 1}. ${a.label}`));
-    const num = parseInt(await ask("Nomor akun: "), 10);
+    const num = parseInt(await ask(`Nomor akun (1-${accounts.length}): `), 10);
     if (isNaN(num) || num < 1 || num > accounts.length) { console.log("[!] Tidak valid."); return; }
     targets = [accounts[num - 1]];
   } else if (mode === "2") {
