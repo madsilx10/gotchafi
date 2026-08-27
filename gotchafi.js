@@ -221,7 +221,7 @@ async function connectAccount(account) {
     fs.writeFileSync(dumpPath, r2.body);
     return { label, status: "GAGAL", error: `Tidak ada form authorize ditemukan. HTML disimpan ke ${dumpPath}` };
   }
-  console.log(`[${label}]   Form ditemukan, fields: ${Object.keys(authorizeForm.fields).join(", ")}`);
+  console.log(`[${label}]   Form ditemukan, action: "${authorizeForm.action}", fields: ${Object.keys(authorizeForm.fields).join(", ")}`);
   if (authorizeForm.submit) console.log(`[${label}]   Submit button: ${authorizeForm.submit.name}=${authorizeForm.submit.value}`);
 
   // Step 4 — kirim field APA ADANYA dari form (bukan set manual 3 field),
@@ -231,9 +231,10 @@ async function connectAccount(account) {
   if (authorizeForm.submit) fieldsToSend[authorizeForm.submit.name] = authorizeForm.submit.value;
   const body = new URLSearchParams(fieldsToSend).toString();
 
-  const postAction = authorizeForm.action
-    ? new URL(authorizeForm.action, "https://api.twitter.com/oauth/authorize").href
-    : "https://api.twitter.com/oauth/authorize";
+  const postAction = (authorizeForm.action && authorizeForm.action.length > 0)
+    ? new URL(authorizeForm.action, r2.finalUrl).href
+    : r2.finalUrl; // action="" atau tidak ada action → submit ke URL halaman itu sendiri (spek HTML), BUKAN tebakan endpoint
+  console.log(`[${label}]   POST ke: ${postAction}`);
 
   // Pakai ct0 TERBARU dari cookie jar (bisa di-rotate Twitter via Set-Cookie
   // di step 1/2), bukan nilai statis dari akun.txt — X-Csrf-Token wajib match
