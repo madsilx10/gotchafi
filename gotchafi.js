@@ -135,6 +135,19 @@ function extractForms(html) {
       fields[name] = value;
       if (type === "submit") submit = { name, value };
     }
+    // Parse <button> tags — X render "Authorize app" sebagai <button>, bukan <input type=submit>
+    const buttonRe = /<button\b([^>]*)>([\s\S]*?)<\/button>/gi;
+    let bm;
+    while ((bm = buttonRe.exec(inner))) {
+      const attrs = bm[1];
+      const innerText = bm[2].replace(/<[^>]+>/g, "").trim();
+      const type = (attrs.match(/type=["']([^"']*)["']/i)?.[1] || "submit").toLowerCase();
+      if (type !== "submit") continue;
+      const name = attrs.match(/name=["']([^"']*)["']/i)?.[1];
+      const value = attrs.match(/value=["']([^"']*)["']/i)?.[1] ?? innerText;
+      if (name) submit = { name, value };
+      else submit = { name: null, value };
+    }
     forms.push({ action, fields, submit });
   }
   return forms;
@@ -243,7 +256,12 @@ async function connectAccount(account) {
   // lalu timpa oauth_token supaya konsisten dengan token yang kita pegang.
   console.log(`[${label}] Step 4: Submit authorize...`);
   const fieldsToSend = { ...authorizeForm.fields, oauth_token };
-  if (authorizeForm.submit) fieldsToSend[authorizeForm.submit.name] = authorizeForm.submit.value;
+  // Buang field cancel — jangan ikut terkirim
+  delete fieldsToSend["cancel"];
+  // Kalau ada submit button yang bukan cancel, ikutkan; kalau null name, skip saja
+  if (authorizeForm.submit && authorizeForm.submit.name && !/cancel|deny/i.test(authorizeForm.submit.value)) {
+    fieldsToSend[authorizeForm.submit.name] = authorizeForm.submit.value;
+  }
   const body = new URLSearchParams(fieldsToSend).toString();
 
   const postAction = (authorizeForm.action && authorizeForm.action.length > 0)
