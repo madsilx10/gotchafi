@@ -5,7 +5,11 @@ const readline = require("readline");
 // ============================================================
 const REF_CODE = "V7WYF9"; // ref lo
 const AKUN_FILE = "akun.txt";
+const DELAY_TASK = 1500;  // ms antar task dalam 1 akun
+const DELAY_AKUN = 3000;  // ms antar akun
 // ============================================================
+
+const TASKS = ["follow", "like", "rt", "comment", "broadcast"];
 
 const HEADERS_BASE = {
   "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
@@ -13,6 +17,10 @@ const HEADERS_BASE = {
   "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
   "Upgrade-Insecure-Requests": "1",
 };
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
 
 // ─── Cookie Jar ───────────────────────────────────────────────
 function createJar() {
@@ -55,7 +63,7 @@ function createJar() {
   };
 }
 
-// ─── HTTP Request ─────────────────────────────────────────────
+// ─── HTTP Request (flow OAuth, pakai cookie jar) ───────────────
 function request(jar, url, { method = "GET", headers = {}, body, followRedirects = true } = {}) {
   return new Promise((resolve, reject) => {
     const doReq = (currentUrl, currentMethod, currentBody, hops) => {
@@ -100,6 +108,40 @@ function request(jar, url, { method = "GET", headers = {}, body, followRedirects
     };
 
     doReq(url, method, body, 0);
+  });
+}
+
+// ─── HTTP Request (task API, pakai gf_sess doang) ──────────────
+function requestTask(gf_sess, path, body) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const options = {
+      hostname: "gotchafi.com",
+      path,
+      method: "POST",
+      headers: {
+        "User-Agent": HEADERS_BASE["User-Agent"],
+        "Accept": "*/*",
+        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(payload),
+        "Origin": "https://gotchafi.com",
+        "Referer": "https://gotchafi.com/",
+        "Cookie": `gf_sess=${gf_sess}`,
+      },
+    };
+
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", chunk => data += chunk);
+      res.on("end", () => {
+        try { resolve({ status: res.statusCode, body: JSON.parse(data) }); }
+        catch { resolve({ status: res.statusCode, body: data }); }
+      });
+    });
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
   });
 }
 
@@ -174,7 +216,7 @@ function seedCookies(jar, auth_token, ct0) {
   }
 }
 
-// ─── Flow ─────────────────────────────────────────────────────
+// ─── Flow Connect X ─────────────────────────────────────────────
 async function finishCallback(jar, url, label) {
   console.log(`[${label}] Step 5: Proses callback...`);
   const gf_sess = jar.getKey("gf_sess", "https://gotchafi.com");
@@ -187,7 +229,7 @@ async function finishCallback(jar, url, label) {
 async function connectAccount(account) {
   const { label } = account;
   console.log(`\n${"=".repeat(50)}`);
-  console.log(`[${label}] Mulai proses...`);
+  console.log(`[${label}] Mulai proses connect...`);
 
   const jar = createJar();
   seedCookies(jar, account.auth_token, account.ct0);
@@ -314,6 +356,53 @@ async function connectAccount(account) {
   return { label, status: "GAGAL", error: `Unexpected URL: ${r4.finalUrl}. Lihat ${failDumpPath}${hint}` };
 }
 
+// ─── Flow Task ──────────────────────────────────────────────────
+async function runTasks(akun) {
+  const { label, gf_sess } = akun;
+  if (!gf_sess) {
+    console.log(`[${label}] Skip task — tidak ada gf_sess`);
+    return;
+  }
+
+  console.log(`[${label}] Mulai proses task... gf_sess: ${gf_sess.slice(0, 20)}...`);
+
+  for (const task of TASKS) {
+    try {
+      const r = await requestTask(gf_sess, "/api/task", { task, code: REF_CODE });
+      const b = r.body;
+      if (typeof b === "object") {
+        const done = b.done ? "✅" : "⏭";
+        const already = b.already ? " (sudah dikerjakan)" : "";
+        const cp = b.capsule?.cp !== undefined ? ` | cp: ${b.capsule.cp}` : "";
+        console.log(`[${label}] ${done} ${task}${already}${cp}`);
+      } else {
+        console.log(`[${label}] ❓ ${task} | ${r.status} | ${String(b).slice(0, 100)}`);
+      }
+    } catch (e) {
+      console.log(`[${label}] ❌ ${task} ERROR: ${e.message}`);
+    }
+    await sleep(DELAY_TASK);
+  }
+}
+
+// ─── Gabungan: connect lalu langsung task untuk 1 akun ──────────
+async function processAccount(account) {
+  let result;
+  try {
+    result = await connectAccount(account);
+  } catch (e) {
+    result = { label: account.label, status: "ERROR", error: e.message };
+  }
+
+  if (result.status === "BERHASIL") {
+    await runTasks(result);
+  } else {
+    console.log(`[${account.label}] ⏭ Skip task — connect gagal (${result.error || result.status})`);
+  }
+
+  return result;
+}
+
 // ─── Menu ─────────────────────────────────────────────────────
 function ask(q) {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -348,14 +437,15 @@ async function main() {
 
   const results = [];
   for (const acc of targets) {
-    try { results.push(await connectAccount(acc)); }
-    catch (e) { results.push({ label: acc.label, status: "ERROR", error: e.message }); }
+    const r = await processAccount(acc);
+    results.push(r);
+    if (acc !== targets[targets.length - 1]) await sleep(DELAY_AKUN);
   }
 
   console.log("\n========== SUMMARY ==========");
   for (const r of results) {
     if (r.status === "BERHASIL")
-      console.log(`✅ ${r.label}: BERHASIL | gf_sess: ${r.gf_sess || "-"}`);
+      console.log(`✅ ${r.label}: BERHASIL (connect + task) | gf_sess: ${r.gf_sess || "-"}`);
     else
       console.log(`❌ ${r.label}: ${r.status} | ${r.error || ""}`);
   }
