@@ -207,19 +207,32 @@ async function connectAccount(account) {
   }
 
   const forms = extractForms(r2.body);
-  // Form yang benar: punya authenticity_token, dan kalau ada >1 form
-  // (biasanya form Authorize + form Cancel terpisah), pilih yang tombolnya
-  // BUKAN "cancel" / "deny".
-  const candidates = forms.filter(f => f.fields.authenticity_token);
+  console.log(`[${label}]   Total form ditemukan: ${forms.length}`);
+  forms.forEach((f, idx) => {
+    console.log(`[${label}]     form[${idx}] action="${f.action}" fields=[${Object.keys(f.fields).join(", ")}] submit=${f.submit ? `${f.submit.name}=${f.submit.value}` : "-"}`);
+  });
+
+  // Form yang benar: form OAuth 1.0a authorize SELALU punya field oauth_token.
+  // Dulu kita nebak nama field CSRF-nya ("authenticity_token"), tapi itu bisa
+  // beda-beda tergantung markup yang lagi di-serve X saat ini — jadi sekarang
+  // kita cari berdasarkan field yang pasti ada (oauth_token), lalu di antara
+  // form yang lolos, pilih yang tombolnya BUKAN "cancel" / "deny" / "batal".
+  const candidates = forms.filter(f => f.fields.oauth_token !== undefined);
   const authorizeForm =
     candidates.find(f => f.submit && !/cancel|deny|batal/i.test(f.submit.value + f.submit.name)) ||
-    candidates[0];
+    candidates[0] ||
+    // fallback terakhir: kalau gak ada form dengan oauth_token eksplisit,
+    // pakai form manapun yang tombolnya jelas bukan cancel/deny
+    forms.find(f => f.submit && !/cancel|deny|batal/i.test(f.submit.value + f.submit.name));
 
   if (!authorizeForm) {
     // Simpan HTML mentah supaya bisa diperiksa manual tanpa perlu buka browser lagi
     const dumpPath = `debug_step2_${label}.html`;
     fs.writeFileSync(dumpPath, r2.body);
-    return { label, status: "GAGAL", error: `Tidak ada form authorize ditemukan. HTML disimpan ke ${dumpPath}` };
+    const hint = /suspend|locked|verify your identity|whoa there/i.test(r2.body)
+      ? " (kemungkinan akun ke-suspend/locked/rate-limit, cek isi HTML-nya)"
+      : "";
+    return { label, status: "GAGAL", error: `Tidak ada form authorize ditemukan${hint}. HTML disimpan ke ${dumpPath}` };
   }
   console.log(`[${label}]   Form ditemukan, action: "${authorizeForm.action}", fields: ${Object.keys(authorizeForm.fields).join(", ")}`);
   if (authorizeForm.submit) console.log(`[${label}]   Submit button: ${authorizeForm.submit.name}=${authorizeForm.submit.value}`);
@@ -240,14 +253,18 @@ async function connectAccount(account) {
   // di step 1/2), bukan nilai statis dari akun.txt — X-Csrf-Token wajib match
   // cookie ct0 yang aktif saat request, kalau tidak match, Twitter diam-diam
   // lempar balik ke halaman default x.com (bukan kasih pesan error).
-  const currentCt0 = jar.getKey("ct0", postAction) || account.ct0;
+  // Catatan: ini flow OAuth 1.0a form HTML biasa (bukan endpoint API modern
+  // kayak x.com/i/api/2/oauth2/authorize), jadi CSRF-nya dihandle lewat field
+  // tersembunyi di form itu sendiri (yang udah ikut ke-submit di `fieldsToSend`),
+  // BUKAN lewat header X-Csrf-Token — makanya header itu dibuang, soalnya
+  // nambahin header API-style ke request form-submit biasa bisa bikin server
+  // curiga/nolak diam-diam.
   const r4 = await request(jar, postAction, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
       Referer: `https://api.twitter.com/oauth/authenticate?oauth_token=${oauth_token}`,
       Origin: "https://api.twitter.com",
-      "X-Csrf-Token": currentCt0,
     },
     body,
   });
