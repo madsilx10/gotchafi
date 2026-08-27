@@ -190,7 +190,7 @@ async function connectAccount(account) {
 
   // Step 2
   console.log(`[${label}] Step 2: Load halaman authorize Twitter...`);
-  const r2 = await request(jar, `https://api.twitter.com/oauth/authenticate?oauth_token=${oauth_token}`, {
+  const r2 = await request(jar, `https://x.com/oauth/authorize?oauth_token=${oauth_token}`, {
     headers: { Referer: "https://gotchafi.com/" },
   });
   console.log(`[${label}]   Status: ${r2.status} | URL: ${r2.finalUrl.slice(0, 80)}`);
@@ -263,8 +263,8 @@ async function connectAccount(account) {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
-      Referer: `https://api.twitter.com/oauth/authenticate?oauth_token=${oauth_token}`,
-      Origin: "https://api.twitter.com",
+      Referer: `https://x.com/oauth/authorize?oauth_token=${oauth_token}`,
+      Origin: "https://x.com",
     },
     body,
   });
