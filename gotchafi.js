@@ -292,6 +292,17 @@ async function connectAccount(account) {
 
   if (r4.finalUrl.includes("gotchafi.com")) return finishCallback(jar, r4.finalUrl, label);
 
+  // X redirect via <meta http-equiv="refresh"> bukan HTTP 301/302
+  const metaRefresh = r4.body.match(/content=["']0;url=([^"']+)["']/i);
+  if (metaRefresh) {
+    const callbackUrl = metaRefresh[1].replace(/&amp;/g, "&");
+    console.log(`[${label}]   Meta-refresh → ${callbackUrl.slice(0, 80)}`);
+    if (callbackUrl.includes("gotchafi.com")) return finishCallback(jar, callbackUrl, label);
+    const r4b = await request(jar, callbackUrl);
+    console.log(`[${label}]   Follow meta: ${r4b.status} | ${r4b.finalUrl.slice(0, 80)}`);
+    if (r4b.finalUrl.includes("gotchafi.com")) return finishCallback(jar, r4b.finalUrl, label);
+  }
+
   // Gagal lagi? simpan body-nya biar bisa dibaca tanpa buka browser
   const failDumpPath = `debug_step4_${label}.html`;
   fs.writeFileSync(failDumpPath, r4.body);
