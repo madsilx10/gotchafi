@@ -339,10 +339,13 @@ async function connectAccount(account) {
   if (metaRefresh) {
     const callbackUrl = metaRefresh[1].replace(/&amp;/g, "&");
     console.log(`[${label}]   Meta-refresh → ${callbackUrl.slice(0, 80)}`);
-    if (callbackUrl.includes("gotchafi.com")) return finishCallback(jar, callbackUrl, label);
+    // PENTING: callbackUrl di sini cuma diekstrak dari HTML, belum pernah
+    // benar-benar di-request. gf_sess di-set via Set-Cookie saat request INI
+    // dijalankan — jadi jangan langsung ke finishCallback tanpa nge-fetch dulu,
+    // walaupun URL-nya udah keliatan "gotchafi.com".
     const r4b = await request(jar, callbackUrl);
     console.log(`[${label}]   Follow meta: ${r4b.status} | ${r4b.finalUrl.slice(0, 80)}`);
-    if (r4b.finalUrl.includes("gotchafi.com")) return finishCallback(jar, r4b.finalUrl, label);
+    return finishCallback(jar, r4b.finalUrl, label);
   }
 
   // Gagal lagi? simpan body-nya biar bisa dibaca tanpa buka browser
