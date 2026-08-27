@@ -202,8 +202,10 @@ async function connectAccount(account) {
 
   // Step 3 — ambil SEMUA field form apa adanya, bukan nebak nama field
   console.log(`[${label}] Step 3: Parse form authorize...`);
-  if (r2.finalUrl.includes("login") || r2.finalUrl.includes("x.com")) {
-    return { label, status: "GAGAL", error: "Cookie expired / tidak valid" };
+  const isLoginPage = r2.finalUrl.includes("/login") || r2.finalUrl.includes("/i/flow/login");
+  const isOAuthPage = r2.finalUrl.includes("/oauth/authorize") || r2.finalUrl.includes("/oauth/authenticate");
+  if (isLoginPage || (!isOAuthPage && !r2.finalUrl.includes("gotchafi.com"))) {
+    return { label, status: "GAGAL", error: `Cookie expired / tidak valid (landed: ${r2.finalUrl})` };
   }
 
   const forms = extractForms(r2.body);
