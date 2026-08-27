@@ -235,13 +235,18 @@ async function connectAccount(account) {
     ? new URL(authorizeForm.action, "https://api.twitter.com/oauth/authorize").href
     : "https://api.twitter.com/oauth/authorize";
 
+  // Pakai ct0 TERBARU dari cookie jar (bisa di-rotate Twitter via Set-Cookie
+  // di step 1/2), bukan nilai statis dari akun.txt — X-Csrf-Token wajib match
+  // cookie ct0 yang aktif saat request, kalau tidak match, Twitter diam-diam
+  // lempar balik ke halaman default x.com (bukan kasih pesan error).
+  const currentCt0 = jar.getKey("ct0", postAction) || account.ct0;
   const r4 = await request(jar, postAction, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
       Referer: `https://api.twitter.com/oauth/authenticate?oauth_token=${oauth_token}`,
       Origin: "https://api.twitter.com",
-      "X-Csrf-Token": account.ct0,
+      "X-Csrf-Token": currentCt0,
     },
     body,
   });
@@ -252,8 +257,12 @@ async function connectAccount(account) {
   // Gagal lagi? simpan body-nya biar bisa dibaca tanpa buka browser
   const failDumpPath = `debug_step4_${label}.html`;
   fs.writeFileSync(failDumpPath, r4.body);
-  console.log(`[${label}]   Body disimpan ke ${failDumpPath} (${r4.body.length} chars)`);
-  return { label, status: "GAGAL", error: `Unexpected URL: ${r4.finalUrl}. Lihat ${failDumpPath}` };
+  const looksLikeGenericShell = r4.body.includes("window.__INITIAL_STATE__");
+  const hint = looksLikeGenericShell
+    ? " (ini x.com app shell generik, bukan halaman authorize — kemungkinan CSRF/ct0 mismatch atau sesi ditolak diam-diam)"
+    : "";
+  console.log(`[${label}]   Body disimpan ke ${failDumpPath} (${r4.body.length} chars)${hint}`);
+  return { label, status: "GAGAL", error: `Unexpected URL: ${r4.finalUrl}. Lihat ${failDumpPath}${hint}` };
 }
 
 // ─── Menu ─────────────────────────────────────────────────────
